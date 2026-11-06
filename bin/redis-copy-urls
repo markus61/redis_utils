@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Wrapper for redis_copy_urls.py that works from any directory, also when
+# called through a symlink, e.g.:
+#   ln -s /opt/redis_utils/bin/redis-copy-urls /usr/local/bin/redis-copy-urls
+#
+# On first run (or when requirements.txt changed) it creates/updates the
+# virtualenv in <repo>/venv. Set PYTHON to choose the interpreter used to
+# create it (default: python3). Bootstrap messages go to stderr.
+set -euo pipefail
+
+readonly MINIMUM_PYTHON="3.10"
+
+# Resolve symlinks so we find the repository, not the link's directory.
+script_path="$(readlink -f -- "${BASH_SOURCE[0]}")"
+repo_dir="$(dirname -- "$(dirname -- "$script_path")")"
+venv_dir="$repo_dir/venv"
+requirements_file="$repo_dir/requirements.txt"
+requirements_stamp="$venv_dir/.requirements.sha256"
+base_python="${PYTHON:-python3}"
+
+log() { echo "redis-copy-urls: $*" >&2; }
+
+ensure_venv() {
+    local wanted_hash
+    wanted_hash="$(sha256sum "$requirements_file" | cut -d' ' -f1)"
+    if [[ -x "$venv_dir/bin/python" && -f "$requirements_stamp" \
+          && "$(cat "$requirements_stamp")" == "$wanted_hash" ]]; then
+        return
+    fi
+
+    if [[ ! -x "$venv_dir/bin/python" ]]; then
+        if ! command -v "$base_python" >/dev/null; then
+            log "'$base_python' not found. Install Python >= $MINIMUM_PYTHON or set PYTHON=/path/to/python3."
+            exit 1
+        fi
+        if ! "$base_python" -c "import sys; sys.exit(sys.version_info < tuple(map(int, '$MINIMUM_PYTHON'.split('.'))))"; then
+            log "$("$base_python" --version 2>&1) is too old; Python >= $MINIMUM_PYTHON is required. Set PYTHON=/path/to/python3.X."
+            exit 1
+        fi
+        log "creating virtualenv in $venv_dir"
+        "$base_python" -m venv "$venv_dir" >&2 || {
+            log "creating the virtualenv failed (on Debian/Ubuntu: apt install python3-venv)."
+            exit 1
+        }
+    fi
+
+    log "installing requirements"
+    "$venv_dir/bin/python" -m pip install --quiet --disable-pip-version-check -r "$requirements_file" >&2
+    echo "$wanted_hash" > "$requirements_stamp"
+}
+
+ensure_venv
+exec "$venv_dir/bin/python" "$repo_dir/redis_copy_urls.py" "$@"
